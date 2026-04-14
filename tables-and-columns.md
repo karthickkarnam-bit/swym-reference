@@ -134,6 +134,28 @@ GROUP BY merchant_id;
 
 ---
 
+### `swymbi.shopper_relay_actions` (event-level)
+Used to compute auto-save (dwell time triggered) wishlist actions at merchant + PID level.
+
+> **Auto-save (30s dwell time) was enabled on 2026-03-20.** Any analysis of this feature should use `>= '2026-03-20'` as the start date.
+
+| column | type | notes |
+|---|---|---|
+| `merchant_id` | text | Merchant identifier |
+| `merchant_pid` | text | Product identifier |
+| `action_type` | text | Action type code. `'1811'` = auto-save after 30s dwell time |
+
+**Typical usage (auto-save actions)**
+
+```sql
+SELECT merchant_id, merchant_pid, COUNT(*) AS auto_save_actions
+FROM swymbi.shopper_relay_actions
+WHERE action_type = '1811'
+GROUP BY merchant_id, merchant_pid;
+```
+
+---
+
 ## Merchant & install metadata
 
 ### `swymbi.merchants`
@@ -246,6 +268,39 @@ Feature configuration values per merchant.
 
 ---
 
+## Plan quota limits (from issue #1050 — Usage & Quota Visibility Widget spec)
+
+Used for `% quota used` calculations. These are the canonical monthly action and lifetime storage quotas per Swym plan.
+
+| Swym Plan | Monthly Actions Quota | Lifetime Storage Quota | Cost/mo |
+|---|---|---|---|
+| Free | N/A (no monthly reset) | 500 | $0 |
+| Starter | 1,000 | 5,000 | $20 |
+| Pro | 10,000 | 50,000 | $60 |
+| Premium | 25,000 | 125,000 | $100 |
+| Enterprise | 250,000+ | Custom | Custom |
+
+> **Source:** [swym-corp/wishlist-shopify-app#1050](https://github.com/swym-corp/wishlist-shopify-app/issues/1050)
+
+**Typical usage (% monthly quota used — inline CASE)**
+
+```sql
+ROUND(
+  100.0 * total_actions /
+  NULLIF(
+    CASE swym_plan
+      WHEN 'Starter'    THEN 1000
+      WHEN 'Pro'        THEN 10000
+      WHEN 'Premium'    THEN 25000
+      WHEN 'Enterprise' THEN 250000
+      ELSE NULL
+    END, 0
+  ), 1
+) AS pct_monthly_quota_used
+```
+
+---
+
 ## Notes on sessions-to-wishlist-actions ratio
 
 If you compute wishlist actions at **PID level** but sessions only exist at **merchant level**, then:
@@ -271,4 +326,7 @@ AND e.app_plan IN ('Starter', 'Pro', 'Premium', 'Enterprise')
 
 -- Exclude trials
 AND COALESCE(s.trial_days, 0) = 0
+
+-- Auto-save feature start date (enabled 2026-03-20)
+AND action_date >= '2026-03-20'
 ```
