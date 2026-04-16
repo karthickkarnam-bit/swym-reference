@@ -67,32 +67,86 @@ Session-level table useful for deduping/unique user analysis.
 | `device_id` | text | Device identifier |
 | `user_id` | text | User identifier |
 
-> **Important:** None of the session tables above include `merchant_pid`. Any "PID-level sessions" metric cannot be computed from these tables alone.
+> **Important:** None of the session tables above include a product ID column. Any "PID-level sessions" metric cannot be computed from these tables alone.
 
 ---
 
 ## Wishlist actions tables
 
-### `swymbi.wishlist_items` (event-level)
-Used to compute wishlist actions at merchant + PID level.
+### `swymbi.wishlist_items` (event-level, registered shoppers)
+Used to compute wishlist actions at merchant + PID level for **registered** shoppers.
 
 | column | type | notes |
 |---|---|---|
 | `merchant_id` | text | Merchant identifier |
-| `merchant_pid` | text | Product identifier |
+| `external_product_master_id` | text | Product identifier (use this — NOT `merchant_pid` or `empi`) |
+| `product_variant_id` | text | Variant identifier |
 | `add_date` | date | Date the item was wishlisted |
+| `removal_date` | date | Date the item was removed (NULL if still active) |
+| `removal_reason` | text | Reason for removal |
+| `session_id` | text | Session identifier — used to classify registered vs anonymous |
+| `list_id` | text | Wishlist list identifier |
+| `list_name` | text | Wishlist list name |
 | `source` | text | e.g. `'auto-wishlist'` |
 | `channel` | text | e.g. `'customer-accounts'` |
+| `shopper_id` | text | Shopper identifier |
+| `location_id` | text | Location identifier |
+| `last_order_id` | text | Last order ID |
+| `last_order_at` | timestamp | Last order timestamp |
+| `last_order_epi` | text | Last order variant ID |
+| `last_notif_id` | text | Last notification ID |
+| `last_notif_sent_at` | timestamp | Last notification timestamp |
+| `sys_period` | tstzrange | System period (for temporal tracking) |
+| `sys_update_date` | date | System update date |
+| `wishlist_item_id` | text | Primary key |
 
 **Typical usage (PID-level actions)**
 
 ```sql
-SELECT merchant_id, merchant_pid, COUNT(*) AS total_wishlist_actions
+SELECT merchant_id, external_product_master_id, COUNT(*) AS total_wishlist_actions
 FROM swymbi.wishlist_items
 WHERE add_date >= '2026-03-01'
   AND add_date <  '2026-04-01'
-GROUP BY merchant_id, merchant_pid;
+GROUP BY merchant_id, external_product_master_id;
 ```
+
+---
+
+### `swymbi.anonymous_wishlist_items` (event-level, anonymous shoppers)
+Same structure as `wishlist_items` but for **anonymous** shoppers.
+
+| column | type | notes |
+|---|---|---|
+| `merchant_id` | text | Merchant identifier |
+| `external_product_master_id` | text | Product identifier |
+| `add_date` | date | Date the item was wishlisted |
+| `session_id` | text | Session identifier |
+
+> Use together with `swymbi.wishlist_items` (UNION ALL) to get total wishlist actions across all shoppers.
+
+---
+
+### `swymbi.save_for_later_items` (event-level, registered shoppers)
+Event-level Save-for-Later actions for **registered** shoppers.
+
+| column | type | notes |
+|---|---|---|
+| `merchant_id` | text | Merchant identifier |
+| `external_product_master_id` | text | Product identifier |
+| `add_date` | date | Date the item was saved for later |
+| `session_id` | text | Session identifier |
+
+---
+
+### `swymbi.anonymous_save_for_later_items` (event-level, anonymous shoppers)
+Event-level Save-for-Later actions for **anonymous** shoppers.
+
+| column | type | notes |
+|---|---|---|
+| `merchant_id` | text | Merchant identifier |
+| `external_product_master_id` | text | Product identifier |
+| `add_date` | date | Date the item was saved for later |
+| `session_id` | text | Session identifier |
 
 ---
 
@@ -135,28 +189,54 @@ GROUP BY merchant_id;
 ---
 
 ### `swymbi.shopper_relay_actions` (event-level)
-Used to compute auto-save (dwell time triggered) wishlist actions at merchant + PID level.
+Used to compute auto-save (dwell time triggered) wishlist actions.
 
 > **Auto-save (30s dwell time) was enabled on 2026-03-20.** Any analysis of this feature should use `>= '2026-03-20'` as the start date.
+> **Registered vs anonymous** classification: join `session_id` to `swymbi.wishlist_items` for registered, `swymbi.anonymous_wishlist_items` for anonymous.
 
 | column | type | notes |
 |---|---|---|
+| `action_id` | text | Primary key |
 | `merchant_id` | text | Merchant identifier |
-| `merchant_pid` | text | Product identifier |
 | `action_type` | text | Action type code. `'1811'` = auto-save after 30s dwell time |
+| `session_id` | text | Session identifier — join to wishlist_items or anonymous_wishlist_items to classify registered vs anonymous |
+| `session_date` | date | Date of the action — **use this for date filtering** |
+| `external_product_master_id` | text | Product identifier |
+| `external_product_id` | text | Variant identifier |
+| `price` | numeric | Product price |
+| `product_variant_id` | text | Product variant ID |
+| `cart_token` | text | Cart token |
+| `medium` | text | Medium/channel |
+| `medium_value` | text | Medium value |
+| `device_id` | text | Device identifier |
+| `utm_source` | text | UTM source |
+| `utm_medium` | text | UTM medium |
+| `utm_term` | text | UTM term |
+| `utm_campaign` | text | UTM campaign |
 
 **Typical usage (auto-save actions)**
 
 ```sql
-SELECT merchant_id, merchant_pid, COUNT(*) AS auto_save_actions
+SELECT merchant_id, external_product_master_id, COUNT(*) AS auto_save_actions
 FROM swymbi.shopper_relay_actions
 WHERE action_type = '1811'
-GROUP BY merchant_id, merchant_pid;
+  AND session_date >= '2026-03-20'
+GROUP BY merchant_id, external_product_master_id;
 ```
 
 ---
 
 ## Merchant & install metadata
+
+### `merchants` (unschema'd)
+Used to map `platform_url` to `merchant_id`. Referenced without schema prefix in some queries.
+
+| column | type | notes |
+|---|---|---|
+| `merchant_id` | text | Merchant identifier |
+| `platform_url` | text | Store URL — join key |
+
+---
 
 ### `swymbi.merchants`
 Core merchant table. Used for Shopify plan enrichment and email filtering.
@@ -181,20 +261,19 @@ Used for install/uninstall date and active install window checks.
 | `platform_url` | text | Store URL — join key to `swymbi.merchants.platform_url` |
 | `app_name` | text | e.g. `'Wishlist'` |
 | `install_date` | date | Date the app was installed |
-| `uninstall_date` | date | Date the app was uninstalled (NULL if still active) |
+| `uninstall_date` | date | Date the app was uninstalled (NULL if still active = currently installed) |
 | `last_activated_plan` | text | Last activated Swym plan |
 | `is_shop_closed` | boolean | Whether the shop is closed |
 
-**Typical usage (installed on / uninstalled date)**
+**Typical usage (active install base)**
 
 ```sql
-SELECT
-  platform_url AS store_url,
-  MIN(install_date)   AS installed_on,
-  MAX(uninstall_date) AS uninstalled_date
-FROM swymrevenue.merchant_app_installs
-WHERE app_name = 'Wishlist'
-GROUP BY platform_url;
+SELECT DISTINCT m.merchant_id
+FROM merchants m
+JOIN swymrevenue.merchant_app_installs i ON m.platform_url = i.platform_url
+WHERE i.app_name = 'Wishlist'
+  AND i.uninstall_date IS NULL
+  AND i.is_shop_closed = FALSE;
 ```
 
 ---
@@ -328,5 +407,9 @@ AND e.app_plan IN ('Starter', 'Pro', 'Premium', 'Enterprise')
 AND COALESCE(s.trial_days, 0) = 0
 
 -- Auto-save feature start date (enabled 2026-03-20)
-AND action_date >= '2026-03-20'
+AND session_date >= '2026-03-20'
+
+-- Active install base
+AND i.uninstall_date IS NULL
+AND i.is_shop_closed = FALSE
 ```
